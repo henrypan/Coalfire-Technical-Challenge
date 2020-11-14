@@ -1,0 +1,2 @@
+# Coalfire-Technical-Challenge
+A company is looking to create a proof of concept environment in GCP. They want a VPC as outlined below. The company will have a management folder and host project that will contain the VPC and subnets and an application folder and service project that will deploy resources into the shared subnets. Subnets should be deployed with future high availability in mind. The company would also like to use Terraform to manage their infrastructure via code.
