@@ -1,0 +1,207 @@
+# Create VPC
+resource "google_compute_global_address" "private_ip_address" {
+  provider = google
+
+  name          = "private-ip-address"
+  purpose       = "VPC"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = "${var.vpc_self_link}"
+}
+
+resource "google_service_networking_connection" "private_vpc_connection" {
+  provider = google
+
+  network                 = "${var.vpc_self_link}"
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_ip_address.name]
+}
+
+
+
+ ## Create public subnet1 & subnet2
+ ##  Create sub1
+
+resource "google_compute_subnetwork" "pub-subnet" {
+     name          = "${var.name}-public-sub1"
+     ip_cidr_range = "${var.pub-subnet-cidr}"
+     network       = "${var.name}-vpc"
+     depends_on    = ["google_compute_network.vpc"]
+     region        = "us-west1"
+  ip_cidr_range = "10.0.0.0/24"
+
+    }
+
+# Create a firewall rule to allow HTTP, SSH, RDP and ICMP traffic on network
+resource "google_compute_firewall" "network-allow-http-ssh-rdp-icmp" {
+  name    = "network-allow-http-ssh-rdp-icmp"
+  network = "${google_compute_network.securenetwork.self_link}"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["3389"]
+  }
+
+  allow {
+    protocol = "icmp"
+  }
+}
+
+# create compute instance for sub1
+resource "google_compute_instance" "instance" {
+        name = "${var.project_id}"
+        region = "us-west1"
+        compute_version = "${var.compute_version}"
+
+        depends_on = [google_service_networking_connection.private_vpc_connection]
+
+        settings {
+                tier = "RedHat "
+                activation_policy = "${var.compute_activation_policy}"
+                disk_autoresize = "${var.compute_disk_autoresize}"
+                disk_size = "20 GB"
+                disk_type = "${var.compute_disk_type}"
+                pricing_plan = "${var.compute_pricing_plan}"
+
+                compute_flags {
+                        name  = "slow_query_log"
+                        value = "on"
+                }
+
+                ip_configuration {
+                        ipv4_enabled = "false"
+                        private_network = "projects/${var.project_id}/global/networks/${var.vpc_name}"
+                }
+        }
+}
+
+## Create public subnet Sub2
+resource "google_compute_subnetwork" "pub-subnet" {
+     name          = "${var.name}-public-sub2"
+     ip_cidr_range = "${var.pub-subnet-cidr}"
+     network       = "${var.name}-vpc"
+     depends_on    = ["google_compute_network.vpc"]
+     region        = "us-west1"
+  ip_cidr_range = "10.0.1.0/24"
+
+# Create a firewall rule to allow HTTP, SSH, RDP and ICMP traffic on network
+resource "google_compute_firewall" "network-allow-http-ssh-rdp-icmp" {
+  name    = "network-allow-http-ssh-rdp-icmp"
+  network = "${google_compute_network.securenetwork.self_link}"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["3389"]
+  }
+
+  allow {
+    protocol = "icmp"
+  }
+}
+
+## Create private subnet sub3 & sub4
+
+resource "google_compute_subnetwork" "private-subnet" {
+     name          = "${var.name}-private-subnet"
+     ip_cidr_range = "${var.private-subnet-cidr}"
+     network       = "${var.name}-vpc"
+     depends_on    = ["google_compute_network.vpc"]
+     region        = "us-west1"
+     private_ip_google_access = "true"
+    }
+
+# Create securesubnet-us subnetwork sub3
+resource "google_compute_subnetwork" {
+  name          = "sub3"
+  region        = "us-west1"
+  network       = "${google_compute_network.securenetwork.self_link}"
+  ip_cidr_range = "10.0.2.0/24"
+}
+
+# create compute instance for sub3
+resource "google_compute_instance" "instance" {
+        name = "${var.project_id}"
+        region = "us-west1"
+        compute_version = "${var.compute_version}"
+
+        depends_on = [google_service_networking_connection.private_vpc_connection]
+
+        settings {
+                tier = "RedHat"
+                activation_policy = "${var.compute_activation_policy}"
+                disk_autoresize = "${var.compute_disk_autoresize}"
+                disk_size = "20 GB"
+                disk_type = "${var.compute_disk_type}"
+                pricing_plan = "${var.compute_pricing_plan}"
+
+                compute_flags {
+                        name  = "slow_query_log"
+                        value = "on"
+                }
+
+                ip_configuration {
+                        ipv4_enabled = "false"
+                        private_network = "projects/${var.project_id}/global/networks/${var.vpc_name}"
+                }
+        }
+}
+
+# create layer 7 application load balancer direct traffic to sub3
+resource "layer 7 LB” {
+  name = "${var.env}-${var.subenv}-${var.lb.name}"
+  iam_role = "gcp:iam::${var.account}:role/LBServiceRole"
+
+  load_balancer {
+    target_group = "${gcp_lb_target_group.app-lb-tg.arn}"
+    port = 80
+  }
+  depends_on = [
+    "lb.app-lb"
+  ]
+}
+
+resource "gcp_lb" “app-lb" {
+  name               = "${var.env}-${var.subenv}-${var.lp.name}"
+  internal           = false
+  load_balancer_type = "application"
+  subnets = "${var.subnet_ids}"
+  idle_timeout = 600
+
+  tags {
+    Owner = ""
+    Env = "${var.env}"
+  }
+}
+
+resource "gcp_lb_listener" “app-lb-listener" {
+  load_balancer_arn = "${gcp_lb.app-lb.arn}"
+  port = 80
+  protocol = "TCP"
+
+  default_action {
+    type = "forward"
+    target_group_arn = "${gcp_lb_target_group.app-lb-tg.arn.sub3}"
+  }
+}
+
+resource "gcp_lb_target_group" “app-lb-tg" {
+  name = "${var.env}-${var.subenv}-${var.appname}"
+  port = 80
+  stickiness = []
+
+  health_check {
+    path = "/actuator/health"
+  }
+
+  protocol = "TCP"
+  vpc_id = "${var.vpc_id}"
+}
+
+# Create securesubnet-us subnetwork sub4
+resource "google_compute_subnetwork" {
+  name          = "sub4"
+  region        = "us-west1"
+  network       = "${google_compute_network.securenetwork.self_link}"
+  ip_cidr_range = "10.0.3.0/24"
+}
+
